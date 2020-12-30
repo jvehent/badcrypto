@@ -1,6 +1,6 @@
 package bignum
 
-// Int is a postive big integer
+// Int is a positive big integer
 type Int struct {
 	nat    []uint16 // natural number stored as 16 bits words
 	natlen int      // length of the nat slice
@@ -85,7 +85,6 @@ func (bi *Int) Bytes() []byte {
 		}
 	}
 	// strip leading zeroes
-	i = 0
 	for i = 0; buf[i] == 0 && i < len(buf); i++ {
 	}
 	return buf[i:]
