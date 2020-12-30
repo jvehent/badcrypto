@@ -1,13 +1,33 @@
 package bignum
 
-// Int is a positive big integer
+// Int is a positive big integer of arbitrary size.
+//
+// Internally, an Int is stored as an array of uint16
+// where the first index contains the lower 16 bits, the
+// second index the next 16 bits, and so on...
+//
+// For example, the 64 bits integer 4611686018427387901 is
+// stored as follows: [65533, 65535, 65535, 16383]
+//
+// The original integer can be retrieved by shifting each
+// limb to the left by 16 bits * index.
+//
+// 65533 + (65535<<16) + (65535<<32) + (16383<<48)
+// which is equivalent to
+// 65533 + (65535 * 2^16) + (65535 * 2^32) + (16383 * 2^48)
+//
+// The internal natlen integer contains the length of the
+// nat slice (the number of 16 bits words).
+//
+// The internal bitlen integer contains the size in bits of
+// the Int.
 type Int struct {
 	nat    []uint16 // natural number stored as 16 bits words
 	natlen int      // length of the nat slice
 	bitlen int      // bit length of the integer
 }
 
-// NewInt initializes a big integer using a small uint16 value
+// NewInt initializes a big integer using an integer value
 func NewInt(v int) *Int {
 	bi := new(Int)
 	bi.nat = storeInt(v)
@@ -29,7 +49,9 @@ func storeInt(v int) []uint16 {
 	return nat
 }
 
-// ToInt returns the unsigned integer representation of a big integer
+// ToInt returns the unsigned integer representation of a big integer.
+// If the big integer is larger than what an integer can contain, the
+// number is truncated to fit into an integer.
 func (bi *Int) ToInt() int {
 	if bi.natlen == 0 {
 		return 0
@@ -44,8 +66,20 @@ func (bi *Int) ToInt() int {
 	return v
 }
 
-// SetBytes sets the value of the big integer to the provided byte buffer.
-// It assumes the buffer contains a big-endian unsigned integer.
+// SetBytes sets the value of a big integer to the provided byte buffer.
+//
+// The buffer must contain a big-endian unsigned integer. For example,
+// the integer 3545084735 would be written as 0xD34DB33F and its []byte
+// would be []byte{0xD3, 0x4D, 0xB3, 0x3F}.
+//
+// When stored in the Int nat slice, the order of the bytes is reversed,
+// such that the lower 16 bits of the number, the last two bytes of the buf
+// slice, is stored in the first index of the Int nat slice. And the upper
+// 16 bits of the number are stored in the last index entry of the Int nat slice.
+//
+// If the provided buf is of an odd length, then the last uint16 is only 8 bits
+// long. It is still stored as a uint16, with the upper 8 bits set to zero, and
+// the internal bitlen is incremented by 8 instead of 16.
 func (bi *Int) SetBytes(buf []byte) {
 	bi.nat = bi.nat[:0]
 	for i := len(buf) - 1; i >= 0; i -= 2 {
@@ -90,7 +124,16 @@ func (bi *Int) Bytes() []byte {
 	return buf[i:]
 }
 
-// Add provides addition on big integers
+// Add provides addition on big integers. It takes an *Int
+// as argument and adds its value to the bi.
+//
+// This algorithm isn't particularly smart. It simply adds
+// each uint16 from bi and x at the same index to each other
+// into an uint32, then keep the upper 16 bits as a carry for
+// the next index, and store the lower 16 bits at the index.
+//
+// If the carry is not zero after the last addition, it is
+// appended to the nat slice of bi.
 func (bi *Int) Add(x *Int) {
 	bitlen := 0
 	switch {
