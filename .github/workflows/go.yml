@@ -34,3 +34,6 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+    - name: Benchmark Bignum
+      run: cd bignum; go test -benchmem -run=^$ -bench .
