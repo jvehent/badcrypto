@@ -139,12 +139,12 @@ func (bi *Int) Add(x *Int) {
 	switch {
 	case bi.natlen < x.natlen:
 		x.Add(bi)
-		bi = x
+		*bi = *x
 		return
 	case x.natlen == 0:
 		return
 	case bi.natlen == 0:
-		bi = x
+		*bi = *x
 		return
 	}
 	// bi.natlen >= x.natlen, continue here
@@ -171,4 +171,57 @@ func (bi *Int) Add(x *Int) {
 		}
 	}
 	bi.bitlen = bitlen
+}
+
+// Mul implements multiplication of the provided Int x with bi
+//
+// It uses a naive linear convolution algorithm that multiplies
+// uint16 words one by one, starting with the lower ones at the
+// beginning of the nat slices.
+func (bi *Int) Mul(x *Int) {
+	switch {
+	case bi.natlen < x.natlen:
+		x.Mul(bi)
+		*bi = *x
+		return
+	case x.natlen == 0, bi.natlen == 0:
+		// multiplication by zero just sets bi to zero
+		bi.nat[0] = 0
+		bi.natlen = 1
+		bi.bitlen = 16
+		return
+	}
+	// bi.natlen >= x.natlen, continue here
+	//fmt.Printf("-------------------\n")
+	product := NewInt(0)
+	for i := 0; i < bi.natlen; i++ {
+		inter := NewInt(0)
+		for j := 0; j < x.natlen; j++ {
+			p := NewInt(int(bi.nat[i]) * int(x.nat[j]))
+			// raise p by 2^16 for each word already processed
+			p.shift16(j)
+			//fmt.Printf("p=%d*%d=%+v\n", bi.nat[i], x.nat[j], p)
+			inter.Add(p)
+			//fmt.Printf("inter=%+v\n", inter)
+		}
+		// raise inter by 2^16 for each word already processed
+		inter.shift16(i)
+		//fmt.Printf("inter=%+v\n", inter)
+		product.Add(inter)
+
+		// TODO this is an oddity with the +8 carry in Add
+		// need to figure out why it does that....
+		product.bitlen += 16
+	}
+	*bi = *product
+	//fmt.Printf("bi=%+v\n", bi)
+}
+
+// shift bi by x count of 16 bits words
+func (bi *Int) shift16(count int) {
+	for shift := 0; shift < count; shift++ {
+		bi.nat = append([]uint16{0}, bi.nat...)
+		bi.natlen++
+		bi.bitlen += 16
+	}
 }

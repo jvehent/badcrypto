@@ -57,8 +57,11 @@ func TestIntAdd(t *testing.T) {
 	var testcases = []struct {
 		a, b, sum int
 	}{
+		{0, 0, 0},
 		{1, 1, 2},
+		{0, 123, 123},
 		{4611686018427387901, 4294967296, 4611686022722355197},
+		{4294967296, 4611686018427387901, 4611686022722355197},
 		{4611686018427387901, 4611686018427387903, 9223372036854775804},
 		{764491283498435, 15, 764491283498450},
 	}
@@ -187,6 +190,64 @@ func BenchmarkStdlibAdd10000(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < 10000; i++ {
 		sum = sum.Add(sum, stdb)
+	}
+}
+
+func TestIntMul(t *testing.T) {
+	t.Parallel()
+	var testcases = []struct {
+		a, b int
+		sum  uint64
+	}{
+		{0, 0, 0},
+		{0, 123, 0},
+		{1, 4294967293, 4294967293},
+		{4294967293, 1, 4294967293},
+		{123, 456, 56088},
+		{456, 123, 56088},
+		{4294967291, 4294967293, 18446744039349813263},
+	}
+	for n, testcase := range testcases {
+		a := NewInt(testcase.a)
+		b := NewInt(testcase.b)
+		a.Mul(b)
+		if uint64(a.ToInt()) != testcase.sum {
+			t.Fatalf("testcase %d expected to find product %d but got %d",
+				n, testcase.sum, a.ToInt())
+		}
+	}
+}
+
+func TestBigIntMulRandoms(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 1000; i++ {
+		// we generate two very large random numbers
+		// and sum them up using both the stdlib big/int and our code.
+		// if the two sums are equal, all is well.
+		upperBound := new(big.Int)
+		upperBound.SetString(`13407807929942597099574024998205846127479365820592393377723561443721764030073546976801874298166903427690031858186486050853753882811946569946433649006084097`, 10)
+		stda, err := rand.Int(rand.Reader, upperBound)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdb, err := rand.Int(rand.Reader, upperBound)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := new(big.Int)
+		ref = ref.Mul(stda, stdb)
+
+		a := new(Int)
+		a.SetBytes(stda.Bytes())
+		b := new(Int)
+		b.SetBytes(stdb.Bytes())
+		a.Mul(b)
+
+		if !bytes.Equal(a.Bytes(), ref.Bytes()) {
+			t.Fatalf("in iteration %d, expected sums of random number to match but didn't\nexpected\n%x\ngot\n%x\nwords were\na=%x\nb=%x\n", i, ref.Bytes(), a.Bytes(), stda.Bytes(), stdb.Bytes())
+		} else {
+			t.Logf("TestBigIntMulRandoms %d success", i)
+		}
 	}
 }
 
