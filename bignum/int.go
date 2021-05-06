@@ -15,24 +15,14 @@ package bignum
 // 65533 + (65535<<16) + (65535<<32) + (16383<<48)
 // which is equivalent to
 // 65533 + (65535 * 2^16) + (65535 * 2^32) + (16383 * 2^48)
-//
-// The internal natlen integer contains the length of the
-// nat slice (the number of 16 bits words).
-//
-// The internal bitlen integer contains the size in bits of
-// the Int.
 type Int struct {
-	nat    []uint16 // natural number stored as 16 bits words
-	natlen int      // length of the nat slice
-	bitlen int      // bit length of the integer
+	nat []uint16 // natural number stored as 16 bits words
 }
 
 // NewInt initializes a big integer using an integer value
 func NewInt(v int) *Int {
 	bi := new(Int)
 	bi.nat = storeInt(v)
-	bi.natlen = len(bi.nat)
-	bi.bitlen = bi.natlen * 16
 	return bi
 }
 
@@ -53,14 +43,14 @@ func storeInt(v int) []uint16 {
 // If the big integer is larger than what an integer can contain, the
 // number is truncated to fit into an integer.
 func (bi *Int) ToInt() int {
-	if bi.natlen == 0 {
+	if len(bi.nat) == 0 {
 		return 0
 	}
 	v := int(bi.nat[0])
-	if bi.natlen == 1 {
+	if len(bi.nat) == 1 {
 		return v
 	}
-	for i := 1; i < 4 && i < bi.natlen; i++ {
+	for i := 1; i < 4 && i < len(bi.nat); i++ {
 		v = int(bi.nat[i])<<(16*i) | v
 	}
 	return v
@@ -78,25 +68,19 @@ func (bi *Int) ToInt() int {
 // 16 bits of the number are stored in the last index entry of the Int nat slice.
 //
 // If the provided buf is of an odd length, then the last uint16 is only 8 bits
-// long. It is still stored as a uint16, with the upper 8 bits set to zero, and
-// the internal bitlen is incremented by 8 instead of 16.
+// long. It is still stored as a uint16, with the upper 8 bits set to zero.
 func (bi *Int) SetBytes(buf []byte) {
 	bi.nat = bi.nat[:0]
 	for i := len(buf) - 1; i >= 0; i -= 2 {
 		// bound check if we're at the last byte of an odd slice.
 		// if so, the upper 8 bits of the last limbs are set to zero
-		// and the bitlen is incremented by 8 instead of 16
 		if i == 0 {
 			bi.nat = append(bi.nat, uint16(buf[i]))
-			bi.natlen = len(bi.nat)
-			bi.bitlen += 8
 			break
 		}
 		// convert two bytes into a uint16 and append them
 		// to the nat slice
 		bi.nat = append(bi.nat, uint16(buf[i-1])<<8|uint16(buf[i]))
-		bi.natlen = len(bi.nat)
-		bi.bitlen += 16
 	}
 }
 
@@ -108,13 +92,10 @@ func (bi *Int) Bytes() []byte {
 	for _, limb16 := range bi.nat {
 		buf = append([]byte{byte(limb16)}, buf...)
 		i += 8
-		if i >= bi.bitlen {
-			break
-		}
 		limb16 >>= 8
 		buf = append([]byte{byte(limb16)}, buf...)
 		i += 8
-		if i >= bi.bitlen {
+		if i >= len(bi.nat)*16 {
 			break
 		}
 	}
@@ -135,42 +116,35 @@ func (bi *Int) Bytes() []byte {
 // If the carry is not zero after the last addition, it is
 // appended to the nat slice of bi.
 func (bi *Int) Add(x *Int) {
-	bitlen := 0
 	switch {
-	case bi.natlen < x.natlen:
+	case len(bi.nat) < len(x.nat):
 		x.Add(bi)
 		*bi = *x
 		return
-	case x.natlen == 0:
+	case len(x.nat) == 0:
 		return
-	case bi.natlen == 0:
+	case len(bi.nat) == 0:
 		*bi = *x
 		return
 	}
-	// bi.natlen >= x.natlen, continue here
 	carry := uint32(0)
 	// add all limbs from x, the smallest number, to bi
-	for i := 0; i < x.natlen; i++ {
+	for i := 0; i < len(x.nat); i++ {
 		limbsum32 := uint32(bi.nat[i]) + uint32(x.nat[i]) + carry
-		//fmt.Printf("%x + %x + %x = %x; ", bi.nat[i], x.nat[i], carry, limbsum32)
+		//fmt.Printf("%x + %x + %x = %x; carry=%x; bitlen=%x\n", bi.nat[i], x.nat[i], carry, limbsum32)
 		carry = uint32(limbsum32 >> 16)
-		//fmt.Printf("carry=%x\n", carry)
+		//fmt.Printf("carry=%x;\n", carry)
 		bi.nat[i] = uint16(limbsum32 & 0xFFFF)
-		bitlen += 16
 	}
 	// if there's a remaining carry, either add it to an upper limb of bi
 	// or allocate a new limb if needed
 	if carry == 1 {
-		if bi.natlen == x.natlen {
+		if len(bi.nat) == len(x.nat) {
 			bi.nat = append(bi.nat, uint16(1))
-			// bi grew by one, update its length
-			bi.natlen++
-			bitlen += 8
 		} else {
-			bi.nat[x.natlen] = uint16(bi.nat[x.natlen] + 1)
+			bi.nat[len(x.nat)] = uint16(bi.nat[len(x.nat)] + 1)
 		}
 	}
-	bi.bitlen = bitlen
 }
 
 // Mul implements multiplication of the provided Int x with bi
@@ -180,23 +154,20 @@ func (bi *Int) Add(x *Int) {
 // beginning of the nat slices.
 func (bi *Int) Mul(x *Int) {
 	switch {
-	case bi.natlen < x.natlen:
+	case len(bi.nat) < len(x.nat):
 		x.Mul(bi)
 		*bi = *x
 		return
-	case x.natlen == 0, bi.natlen == 0:
+	case len(x.nat) == 0, len(bi.nat) == 0:
 		// multiplication by zero just sets bi to zero
 		bi.nat[0] = 0
-		bi.natlen = 1
-		bi.bitlen = 16
 		return
 	}
-	// bi.natlen >= x.natlen, continue here
-	//fmt.Printf("-------------------\n")
-	product := NewInt(0)
-	for i := 0; i < bi.natlen; i++ {
-		inter := NewInt(0)
-		for j := 0; j < x.natlen; j++ {
+
+	var product = new(Int)
+	for i := 0; i < len(bi.nat); i++ {
+		var inter = new(Int)
+		for j := 0; j < len(x.nat); j++ {
 			p := NewInt(int(bi.nat[i]) * int(x.nat[j]))
 			// raise p by 2^16 for each word already processed
 			p.shift16(j)
@@ -208,10 +179,6 @@ func (bi *Int) Mul(x *Int) {
 		inter.shift16(i)
 		//fmt.Printf("inter=%+v\n", inter)
 		product.Add(inter)
-
-		// TODO this is an oddity with the +8 carry in Add
-		// need to figure out why it does that....
-		product.bitlen += 16
 	}
 	*bi = *product
 	//fmt.Printf("bi=%+v\n", bi)
@@ -221,7 +188,5 @@ func (bi *Int) Mul(x *Int) {
 func (bi *Int) shift16(count int) {
 	for shift := 0; shift < count; shift++ {
 		bi.nat = append([]uint16{0}, bi.nat...)
-		bi.natlen++
-		bi.bitlen += 16
 	}
 }
