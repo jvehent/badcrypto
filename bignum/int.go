@@ -1,5 +1,9 @@
 package bignum
 
+import (
+	"math/big"
+)
+
 // Int is a positive big integer of arbitrary size.
 //
 // Internally, an Int is stored as an array of uint16
@@ -18,6 +22,8 @@ package bignum
 type Int struct {
 	nat []uint16 // natural number stored as 16 bits words
 }
+
+var one = &Int{nat: []uint16{1}}
 
 // NewInt initializes a big integer using an integer value
 func NewInt(v int) *Int {
@@ -70,7 +76,7 @@ func (bi *Int) ToInt() int {
 // If the provided buf is of an odd length, then the last uint16 is only 8 bits
 // long. It is still stored as a uint16, with the upper 8 bits set to zero.
 func (bi *Int) SetBytes(buf []byte) {
-	bi.nat = bi.nat[:0]
+	bi.nat = bi.nat[:0] // clear the buffer
 	for i := len(buf) - 1; i >= 0; i -= 2 {
 		// bound check if we're at the last byte of an odd slice.
 		// if so, the upper 8 bits of the last limbs are set to zero
@@ -88,6 +94,9 @@ func (bi *Int) SetBytes(buf []byte) {
 // of the big integer
 func (bi *Int) Bytes() []byte {
 	i := 0
+	if len(bi.nat) == 0 {
+		return []byte{}
+	}
 	var buf []byte
 	for _, limb16 := range bi.nat {
 		buf = append([]byte{byte(limb16)}, buf...)
@@ -100,7 +109,7 @@ func (bi *Int) Bytes() []byte {
 		}
 	}
 	// strip leading zeroes
-	for i = 0; buf[i] == 0 && i < len(buf); i++ {
+	for i = 0; buf[i] == 0 && i < len(buf)-1; i++ {
 	}
 	return buf[i:]
 }
@@ -147,6 +156,41 @@ func (bi *Int) Add(x *Int) {
 	}
 }
 
+// Sub substracts x from bi. If x is greater than bi, it panics.
+func (bi *Int) Sub(x *Int) {
+	switch bi.Compare(x) {
+	case -1:
+		panic("x is larger than bi, which would result in a negative number, that are not yet supported")
+	case 0:
+		bi.Zero()
+		return
+	}
+	carry := int(0)
+	var i int
+	for i = 0; i < len(x.nat); i++ {
+		limbdiff32 := int(bi.nat[i]) - (int(x.nat[i]) + carry)
+		//fmt.Printf("%x - (%x + %x) = %x;\n", bi.nat[i], x.nat[i], carry, limbdiff32)
+		if limbdiff32 < 0 {
+			// x.nat[i] was greater than bi.nat[i] so the diff is a negative
+			// number. we store a carry of one and set the value of bi.nat[i]
+			// to the inverse of the difference
+			carry = 1
+			bi.nat[i] = 0xFFFF - uint16(-limbdiff32) + 1 // surely there's a better way...
+			//fmt.Printf("storing bi.nat[%x]=%x\n", i, 0xFFFF-uint16(-limbdiff32))
+		} else {
+			carry = 0
+			bi.nat[i] = uint16(limbdiff32)
+		}
+	}
+	if carry == 1 {
+		if len(bi.nat) == len(x.nat) {
+			panic("remaining carry implies x is larger than bi and negative numbers are not supported")
+		}
+		//fmt.Printf("i=%d; len(bi.nat)=%d; len(x.nat)=%d\n", i, len(bi.nat), len(x.nat))
+		bi.nat[i]--
+	}
+}
+
 // Mul implements multiplication of the provided Int x with bi
 //
 // It uses a naive linear convolution algorithm that multiplies
@@ -155,8 +199,10 @@ func (bi *Int) Add(x *Int) {
 func (bi *Int) Mul(x *Int) {
 	switch {
 	case len(bi.nat) < len(x.nat):
-		x.Mul(bi)
-		*bi = *x
+		y := new(Int)
+		y.SetBytes(x.Bytes())
+		y.Mul(bi)
+		*bi = *y
 		return
 	case len(x.nat) == 0, len(bi.nat) == 0:
 		// multiplication by zero just sets bi to zero
@@ -184,9 +230,119 @@ func (bi *Int) Mul(x *Int) {
 	//fmt.Printf("bi=%+v\n", bi)
 }
 
+// Mod sets bi to the remainder of the Euclidian division by x,
+// aka. a modulo operation bi mod x.
+func (bi *Int) Mod(x *Int) {
+
+}
+
 // shift bi by x count of 16 bits words
 func (bi *Int) shift16(count int) {
 	for shift := 0; shift < count; shift++ {
 		bi.nat = append([]uint16{0}, bi.nat...)
 	}
+}
+
+// Zero resets a big integer to zero
+func (bi *Int) Zero() {
+	bi.nat = make([]uint16, 0)
+}
+
+// Increment adds one to big integer
+func (bi *Int) Increment() {
+	bi.Add(NewInt(1))
+}
+
+// Decrement substracts one from big integer
+func (bi *Int) Decrement() {
+	bi.Sub(NewInt(1))
+}
+
+// Compare returns 1 if bi is greater than x, 0 if they
+// are equal, and -1 if bi is smaller than x.
+func (bi *Int) Compare(x *Int) (r int) {
+	m := len(bi.nat)
+	n := len(x.nat)
+	if m != n || m == 0 {
+		// compare the the length of the nat slices
+		// to get a quick answer on which number is larger
+		if m < n {
+			return -1
+		} else {
+			return 1
+		}
+	}
+
+	// if the nat len are equal, iterate over the nat limb
+	// on bi until we find one that isn't identical to the
+	// nat link of the same indice on x. Then compare those
+	// two limbs to find out which is greater.
+	var i int
+	for i = m - 1; i > 0 && bi.nat[i] == x.nat[i]; i-- {
+	}
+	switch {
+	case bi.nat[i] < x.nat[i]:
+		return -1
+	case bi.nat[i] > x.nat[i]:
+		return 1
+	}
+	return 0 // bi and x are equal
+}
+
+// ModularExponentiation raises a big integer bi to the exponent x
+// and reduces it modulo n, such as bi = bi^x mod n
+func (bi *Int) ModularExponentiation(x *Int, modulus *Int) {
+	/* from https://en.wikipedia.org/wiki/Modular_exponentiation#Memory-efficient_method
+		if modulus = 1 then
+	        return 0
+	    c := 1
+	    for e_prime = 0 to exponent-1 do
+	        c := (c * base) mod modulus
+	    return c
+	*/
+	if modulus.Compare(one) == 0 {
+		bi.Zero()
+		return
+	}
+
+	// TODO: cheating and using the big package for modulus stuff
+	// until I have it implemented locally
+	bigmod := new(big.Int)
+	bigmod.SetBytes(modulus.Bytes())
+
+	c := NewInt(1)
+
+	//fmt.Printf("computing %x ^ %x mod %x\n", bi.Bytes(), x.Bytes(), modulus.Bytes())
+	for e := NewInt(0); e.Compare(x) < 0; e.Increment() {
+		//fmt.Printf("%x: %x * %x mod %x\n", e.Bytes(), c.Bytes(), base.Bytes(), modulus.Bytes())
+
+		c.Mul(bi)
+		// cheating and using the big package for modulus
+		bigc := new(big.Int)
+		bigc.SetBytes(c.Bytes())
+		c.SetBytes(bigc.Mod(bigc, bigmod).Bytes())
+	}
+	bi.SetBytes(c.Bytes())
+}
+
+// IsPrime returns true if a given big integer is considered
+// prime within a high degree of certainty.
+//
+// well... in theory anyway. for now this is just running Fermat's
+// primality test, so it won't catch pseudoprimes.
+// But soon we'll have Rabin Miller too!
+func (bi *Int) IsPrime() bool {
+	p := new(Int)
+	p.SetBytes(bi.Bytes())
+	pmin := new(Int)
+	pmin.SetBytes(bi.Bytes())
+	pmin.Decrement()
+	for _, step := range []int{2, 3, 5, 7, 11} {
+		a := NewInt(step)
+		a.ModularExponentiation(pmin, p)
+		if a.Compare(NewInt(1)) != 0 {
+			return false
+		}
+	}
+	return true
 }
