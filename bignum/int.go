@@ -1,9 +1,5 @@
 package bignum
 
-import (
-	"math/big"
-)
-
 // Int is a positive big integer of arbitrary size.
 //
 // Internally, an Int is stored as an array of uint16
@@ -22,8 +18,6 @@ import (
 type Int struct {
 	nat []uint16 // natural number stored as 16 bits words
 }
-
-var one = &Int{nat: []uint16{1}}
 
 // NewInt initializes a big integer using an integer value
 func NewInt(v int) *Int {
@@ -90,6 +84,12 @@ func (bi *Int) SetBytes(buf []byte) {
 	}
 }
 
+// Set sets bi to the value of x
+func (bi *Int) Set(x *Int) {
+	bi.nat = make([]uint16, len(x.nat))
+	copy(bi.nat, x.nat)
+}
+
 // Bytes returns the big endian unsigned byte slice representation
 // of the big integer
 func (bi *Int) Bytes() []byte {
@@ -140,7 +140,7 @@ func (bi *Int) Add(x *Int) {
 	// add all limbs from x, the smallest number, to bi
 	for i := 0; i < len(x.nat); i++ {
 		limbsum32 := uint32(bi.nat[i]) + uint32(x.nat[i]) + carry
-		//fmt.Printf("%x + %x + %x = %x; carry=%x; bitlen=%x\n", bi.nat[i], x.nat[i], carry, limbsum32)
+		//fmt.Printf("%x + %x + %x = %x\n", bi.nat[i], x.nat[i], carry, limbsum32)
 		carry = uint32(limbsum32 >> 16)
 		//fmt.Printf("carry=%x;\n", carry)
 		bi.nat[i] = uint16(limbsum32 & 0xFFFF)
@@ -200,7 +200,7 @@ func (bi *Int) Mul(x *Int) {
 	switch {
 	case len(bi.nat) < len(x.nat):
 		y := new(Int)
-		y.SetBytes(x.Bytes())
+		y.Set(x)
 		y.Mul(bi)
 		*bi = *y
 		return
@@ -230,10 +230,75 @@ func (bi *Int) Mul(x *Int) {
 	//fmt.Printf("bi=%+v\n", bi)
 }
 
-// Mod sets bi to the remainder of the Euclidian division by x,
-// aka. a modulo operation bi mod x.
-func (bi *Int) Mod(x *Int) {
+// Div implements integer division of bi by x and returns
+// the remainder n.
+func (bi *Int) Div(x *Int) (n *Int) {
+	n = new(Int)
+	if x.Compare(NewInt(0)) == 0 {
+		panic("division by zero")
+	}
+	switch bi.Compare(x) {
+	case 0:
+		// if bi and x are equal, quotient is one, remainder is zero
+		n.Zero()
+		bi.Set(NewInt(1))
+		return
+	case -1:
+		// if x is greater than bi,
+		// then quotient is zero and remainder is bi
+		n.Set(bi)
+		bi.Zero()
+		return
+	}
 
+	// substract x from bi until bi is lower than x,
+	// then the value of bi is the remainder stored in n,
+	// and the number of iteration is the quotient stored in bi
+	q := NewInt(0)
+	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
+		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
+		bi.Sub(x)
+	}
+	n.Set(bi)
+	bi.Set(q)
+	return
+}
+
+// ChildishDiv implements integer division of bi by x and returns
+// the remainder n.
+//
+// It does so by iteratively substracting x from bi, which is
+// pretty much how a child would do it.
+func (bi *Int) ChildishDiv(x *Int) (n *Int) {
+	n = new(Int)
+	if x.Compare(NewInt(0)) == 0 {
+		panic("division by zero")
+	}
+	switch bi.Compare(x) {
+	case 0:
+		// if bi and x are equal, quotient is one, remainder is zero
+		n.Zero()
+		bi.Set(NewInt(1))
+		return
+	case -1:
+		// if x is greater than bi,
+		// then quotient is zero and remainder is bi
+		n.Set(bi)
+		bi.Zero()
+		return
+	}
+	// substract x from bi until bi is lower than x,
+	// then the value of bi is the remainder stored in n,
+	// and the number of iteration is the quotient stored in bi
+	q := NewInt(0)
+	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
+		//fmt.Printf("q=%x\n", q.Bytes())
+		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
+		bi.Sub(x)
+	}
+	n.Set(bi)
+	bi.Set(q)
+	return
 }
 
 // shift bi by x count of 16 bits words
@@ -300,44 +365,30 @@ func (bi *Int) ModularExponentiation(x *Int, modulus *Int) {
 	        c := (c * base) mod modulus
 	    return c
 	*/
-	if modulus.Compare(one) == 0 {
+	if modulus.Compare(NewInt(1)) == 0 {
 		bi.Zero()
 		return
 	}
 
-	// TODO: cheating and using the big package for modulus stuff
-	// until I have it implemented locally
-	bigmod := new(big.Int)
-	bigmod.SetBytes(modulus.Bytes())
-
 	c := NewInt(1)
-
 	//fmt.Printf("computing %x ^ %x mod %x\n", bi.Bytes(), x.Bytes(), modulus.Bytes())
 	for e := NewInt(0); e.Compare(x) < 0; e.Increment() {
 		//fmt.Printf("%x: %x * %x mod %x\n", e.Bytes(), c.Bytes(), base.Bytes(), modulus.Bytes())
-
 		c.Mul(bi)
-		// cheating and using the big package for modulus
-		bigc := new(big.Int)
-		bigc.SetBytes(c.Bytes())
-		c.SetBytes(bigc.Mod(bigc, bigmod).Bytes())
+		c.Set(c.ChildishDiv(modulus))
 	}
-	bi.SetBytes(c.Bytes())
+	bi.Set(c)
 }
 
-// IsPrime returns true if a given big integer is considered
-// prime within a high degree of certainty.
-//
-// well... in theory anyway. for now this is just running Fermat's
-// primality test, so it won't catch pseudoprimes.
-// But soon we'll have Rabin Miller too!
-func (bi *Int) IsPrime() bool {
+// IsFermatPrime returns true if a given big integer is considered
+// prime using Fermat's primality test
+func (bi *Int) IsFermatPrime() bool {
 	p := new(Int)
-	p.SetBytes(bi.Bytes())
+	p.Set(bi)
 	pmin := new(Int)
-	pmin.SetBytes(bi.Bytes())
+	pmin.Set(bi)
 	pmin.Decrement()
-	for _, step := range []int{2, 3, 5, 7, 11} {
+	for _, step := range []int{2, 3, 5, 7} {
 		a := NewInt(step)
 		a.ModularExponentiation(pmin, p)
 		if a.Compare(NewInt(1)) != 0 {
@@ -346,3 +397,8 @@ func (bi *Int) IsPrime() bool {
 	}
 	return true
 }
+
+// IsRabinMillerPrime implements primality test of bi using the
+// Rabin-Miller algorithm
+//func (bi *Int) IsRabinMillerPrime() bool {
+//}
