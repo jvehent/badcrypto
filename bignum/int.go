@@ -233,71 +233,123 @@ func (bi *Int) Mul(x *Int) {
 // Div implements integer division of bi by x and returns
 // the remainder n.
 func (bi *Int) Div(x *Int) (n *Int) {
-	n = new(Int)
-	if x.Compare(NewInt(0)) == 0 {
+	// Ensure inputs are normalized, especially for x if it's [0]
+	// and for bi for iteration.
+	bi.normalize()
+	x.normalize()
+
+	// n is a named return parameter, initialized to nil.
+	// It must be set before any return.
+
+	if len(x.nat) == 1 && x.nat[0] == 0 { // x is zero
 		panic("division by zero")
 	}
+
+	// Special case: If bi (dividend) is zero.
+	// Use Compare with NewInt(0) for robustness.
+	// NewInt(0) creates {nat: [0]}, which is our canonical zero.
+	tempZeroForCompare := NewInt(0) 
+	if bi.Compare(tempZeroForCompare) == 0 {
+		n = NewInt(0) // Remainder is 0
+		bi.Zero()     // Quotient is 0 (bi is already 0, Zero() ensures canonical form)
+		return
+	}
+
 	switch bi.Compare(x) {
 	case 0:
 		// if bi and x are equal, quotient is one, remainder is zero
-		n.Zero()
-		bi.Set(NewInt(1))
+		n = NewInt(0)
+		bi.Set(NewInt(1)) // Quotient is 1
 		return
 	case -1:
 		// if x is greater than bi,
 		// then quotient is zero and remainder is bi
-		n.Set(bi)
-		bi.Zero()
+		n = NewInt(0)
+		n.Set(bi) // Remainder is the original bi
+		bi.Zero()   // Quotient is 0
 		return
 	}
 
-	// substract x from bi until bi is lower than x,
-	// then the value of bi is the remainder stored in n,
-	// and the number of iteration is the quotient stored in bi
-	q := NewInt(0)
-	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
-		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
-		bi.Sub(x)
-	}
-	n.Set(bi)
-	bi.Set(q)
-	return
-}
+	// Long division logic starts here
+	// q will accumulate the quotient.
+	// r will be the running remainder (currentDividendPart).
+	q := NewInt(0) 
+	r := NewInt(0) 
 
-// ChildishDiv implements integer division of bi by x and returns
-// the remainder n.
-//
-// It does so by iteratively substracting x from bi, which is
-// pretty much how a child would do it.
-func (bi *Int) ChildishDiv(x *Int) (n *Int) {
-	n = new(Int)
-	if x.Compare(NewInt(0)) == 0 {
-		panic("division by zero")
+	// Iterate from most significant limb of dividend (bi)
+	for i := len(bi.nat) - 1; i >= 0; i-- {
+		// 1. Bring down the next limb from the dividend into r
+		// r = (r << 16) + bi.nat[i]
+		r.shift16(1)      // Make space by shifting left (logical left shift)
+		r.nat[0] = bi.nat[i] // Set the least significant limb
+		r.normalize()        // Important after potential leading zeros from shift if r was [0]
+
+		// 2. Estimate how many times x fits into r (currentDividendPart)
+		// q_limb will be the quotient digit for this step
+		var q_limb uint16 = 0
+		if r.Compare(x) >= 0 {
+			// Binary search for q_limb: find largest ql such that NewInt(int(ql)).Mul(x) <= r.
+			// ql is between 1 and 0xFFFF.
+			var low uint32 = 1
+			var high uint32 = 0xFFFF
+			var current_ql_val uint16 = 0 // Best q_limb found so far in binary search
+
+			for low <= high {
+				mid := (low + high) / 2
+				if mid == 0 { // Avoid infinite loop or issues if mid becomes 0
+					break
+				}
+				ql_candidate_int := NewInt(int(mid))
+				temp_product := NewInt(0)
+				temp_product.Set(x)
+				temp_product.Mul(ql_candidate_int)
+
+				if temp_product.Compare(r) <= 0 {
+					// This ql_candidate_int is a possible candidate (or too small)
+					current_ql_val = uint16(mid)
+					low = mid + 1 // Try for a larger q_limb
+				} else {
+					// This ql_candidate_int is too large
+					high = mid - 1
+				}
+			}
+			q_limb = current_ql_val // The largest one found
+		}
+		// q_limb is now the estimated (and refined) quotient limb for this step.
+		// It could be 0 if r < x.
+
+		// 3. Add q_limb to the overall quotient q
+		// q = (q << 16) + q_limb
+		q.shift16(1)
+		q.nat[0] = q_limb
+		// q.normalize() // Normalize q: [0,0,X] should become [X] if MSB, or [0,X]
+		// Normalizing q at each step might be slightly inefficient but safe.
+		// Consider normalizing q once at the end, but intermediate leading zeros
+		// could affect Compare or other operations if they expect normalized numbers.
+		// For now, let's normalize. If q starts as [0], shift makes it [0,0], then nat[0]=ql makes it [ql,0].
+		// This needs to be [0,ql] for big-endian interpretation of how q is built.
+		// The current shift16 prepends, so q.nat[0] is LSB. This is correct.
+		// Example: q=0. q_limb=A -> q.shift16(1) -> q=[0,0]. q.nat[0]=A -> q=[A,0]. This is q=A.
+		// Next, q_limb=B. q.shift16(1) -> q=[0,A,0]. q.nat[0]=B -> q=[B,A,0]. This is q = A*2^16 + B. Correct.
+		q.normalize()
+
+
+		// 4. Subtract (q_limb * x) from r
+		if q_limb > 0 {
+			temp_product_sub := NewInt(0)
+			temp_product_sub.Set(x)
+			temp_product_sub.Mul(NewInt(int(q_limb)))
+			r.Sub(temp_product_sub)
+			r.normalize() // Normalize remainder after subtraction
+		}
 	}
-	switch bi.Compare(x) {
-	case 0:
-		// if bi and x are equal, quotient is one, remainder is zero
-		n.Zero()
-		bi.Set(NewInt(1))
-		return
-	case -1:
-		// if x is greater than bi,
-		// then quotient is zero and remainder is bi
-		n.Set(bi)
-		bi.Zero()
-		return
-	}
-	// substract x from bi until bi is lower than x,
-	// then the value of bi is the remainder stored in n,
-	// and the number of iteration is the quotient stored in bi
-	q := NewInt(0)
-	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
-		//fmt.Printf("q=%x\n", q.Bytes())
-		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
-		bi.Sub(x)
-	}
-	n.Set(bi)
-	bi.Set(q)
+
+	// Finalization
+	bi.Set(q) // bi becomes the quotient
+	n = NewInt(0)
+	n.Set(r)  // n is the final remainder
+	n.normalize() // Ensure remainder is normalized
+
 	return
 }
 
@@ -310,7 +362,25 @@ func (bi *Int) shift16(count int) {
 
 // Zero resets a big integer to zero
 func (bi *Int) Zero() {
-	bi.nat = make([]uint16, 0)
+	bi.nat = []uint16{0}
+}
+
+// normalize removes leading zero limbs from bi.nat.
+// If bi.nat is empty or all zeros, it becomes [0].
+// For example, [0,0,1,2,0,0] becomes [0,0,1,2] (assuming little-endian)
+// No, for little-endian [1,2,0,0] becomes [1,2]. [0,0,0] becomes [0].
+// [0,0,1,2] means 2*16^3 + 1*16^2.
+// normalize should remove trailing zeros in the slice, which are leading zeros of the number.
+func (bi *Int) normalize() {
+	if len(bi.nat) == 0 {
+		bi.nat = []uint16{0}
+		return
+	}
+	i := len(bi.nat) - 1
+	for i > 0 && bi.nat[i] == 0 { // Iterate from the end of the slice
+		i--
+	}
+	bi.nat = bi.nat[:i+1] // Slice to the last non-zero limb
 }
 
 // Increment adds one to big integer
@@ -375,7 +445,10 @@ func (bi *Int) ModularExponentiation(x *Int, modulus *Int) {
 	for e := NewInt(0); e.Compare(x) < 0; e.Increment() {
 		//fmt.Printf("%x: %x * %x mod %x\n", e.Bytes(), c.Bytes(), base.Bytes(), modulus.Bytes())
 		c.Mul(bi)
-		c.Set(c.ChildishDiv(modulus))
+		// c.Div(modulus) modifies c to be the quotient and returns the remainder.
+		// For modular exponentiation, we need c to become the remainder.
+		remainder := c.Div(modulus)
+		c.Set(remainder)
 	}
 	bi.Set(c)
 }
