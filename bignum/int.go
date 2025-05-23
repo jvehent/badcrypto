@@ -1,5 +1,9 @@
 package bignum
 
+import (
+	"fmt"
+)
+
 // Int is a positive big integer of arbitrary size.
 //
 // Internally, an Int is stored as an array of uint16
@@ -231,59 +235,184 @@ func (bi *Int) Mul(x *Int) {
 }
 
 // Div implements integer division of bi by x and returns
-// the remainder n.
-func (bi *Int) Div(x *Int) (n *Int) {
-	n = new(Int)
+// the remainder r.
+func (bi *Int) Div(x *Int) (r *Int) {
+	r = new(Int)
 	if x.Compare(NewInt(0)) == 0 {
 		panic("division by zero")
 	}
 	switch bi.Compare(x) {
 	case 0:
 		// if bi and x are equal, quotient is one, remainder is zero
-		n.Zero()
+		r.Zero()
 		bi.Set(NewInt(1))
 		return
 	case -1:
 		// if x is greater than bi,
 		// then quotient is zero and remainder is bi
-		n.Set(bi)
+		r.Set(bi)
 		bi.Zero()
 		return
 	}
+	// Iterate through each individual 16 bits work of bi one by one,
+	// from the highest word to the lowest,
+	// and for each, grow r by 16 bits and set its lowest value to the
+	// current uint16 work of bi
+	// effectively, we're making "r" biggest than the divisor x, and when
+	// it is bigger, then we proceed to divide r by x.
+	q := new(Int)
+	for i := len(bi.nat) - 1; i >= 0; i-- {
+		r.shift16(1)
+		r.nat[0] = bi.nat[i]
+		if x.Compare(r) > 0 {
+			// r is still not larger than x, go through
+			// the loop again to grow r some more
+			continue
+		}
+		// at this point r is larger than x so we can divide r by x
+		//
+		// next we use m and n to find the word length of the quotient n
+		// by growing n by one word and testing m*n > r.
+		// When n is too big, go back one word.
+		n := NewInt(1)
+		m := new(Int)
+		for {
+			m.Set(x)
+			m.Mul(n)
+			fmt.Printf("loop=%d shift16, n=%v, m=%v is >%v? \n", i, n, m, r)
+			if m.Compare(r) >= 0 {
+				break
+			}
+			n.shift16(1)
+		}
+		n.nat = n.nat[1:len(n.nat)] // go back by one word since we went too far
+		for j, _ := range n.nat {
+			n.nat[j] = 0xffff
+		}
+		n2 := findIntermediateDivisor(r, x, n)
 
-	// substract x from bi until bi is lower than x,
-	// then the value of bi is the remainder stored in n,
-	// and the number of iteration is the quotient stored in bi
-	q := NewInt(0)
-	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
-		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
-		bi.Sub(x)
+		/*
+				var sk int
+				for k := 15; k >= 0; k-- {
+					m.Set(x)
+					m.Mul(n)
+					switch m.Compare(r) {
+					case 0:
+						goto done // we found an exact match for x*n=r
+					case 1:
+						sk = k
+						n.nat[j] >>= k
+						//n.nat[j] -= uint16(math.Pow(2, float64(k)))
+						fmt.Printf("loop=%d coarse downshift k=%d, n=%v, m=%v is >%v? \n", i, k, n, m, r)
+					}
+				}
+				//upper := 1 >> sk
+				upper := int(math.Pow(2, float64(sk)))
+				for k := sk; k <= upper; k++ {
+					m.Set(x)
+					m.Mul(n)
+					switch m.Compare(r) {
+					case 0:
+						goto done // we found an exact match for x*n=r
+					case -1:
+						n.nat[j]++
+						fmt.Printf("loop=%d fine downshift k=%d, n=%v, m=%v is >%v? \n", i, k, n, m, r)
+					}
+				}
+			}
+			// now we're just a bit too low, try intermediate values
+			for {
+				m.Set(x)
+				m.Mul(n)
+				fmt.Printf("loop=%d increment, n=%v, m=%v is >%v? \n", i, n, m, r)
+				if m.Compare(r) >= 0 {
+					break
+				}
+				n.Increment()
+			}
+			// the previous value was the right one
+			n.Decrement()
+		*/
+		m.Set(x)
+		m.Mul(n2)
+		r.Sub(m)
+		fmt.Printf("loop=%d, n=%x, r=%x\n", i, n2, r)
+		q.nat = append(n2.nat, q.nat...)
 	}
-	n.Set(bi)
 	bi.Set(q)
 	return
 }
 
+func findIntermediateDivisor(r, x, upper *Int) (n *Int) {
+	// upper is the limit we do not want to exceed. We use it
+	// to set our starting point by allocating n to its length,
+	// then setting n value to upper and bit shifting its smallest
+	// word by 1, which effectively sets n right below upper
+	fmt.Printf("findIntermediateDivisor: invoking with r=%v; x=%v; upper=%v\n", r, x, upper)
+	n = new(Int)
+	n.Set(upper)
+	for i := 0; i < len(n.nat); i++ {
+		if n.nat[i] > 0 {
+			n.nat[i] <<= 1
+			break
+		}
+	}
+
+	m := new(Int)
+	for j := 0; j < len(n.nat); j++ {
+		for k := 0; k < 16; k++ {
+			// multiply x by n and compare it to r
+			// if it is lower, bit shift n
+			m.Set(x)
+			m.Mul(n)
+			switch m.Compare(r) {
+			case 0:
+				return
+			case 1:
+				// n*x is greater than r
+				// go down the resursive path user n as upper
+				return findIntermediateDivisor(r, x, n)
+			case -1:
+				// n*x is lower than r
+				//
+				// there is a special case here to handle the end of the
+				// recursion: if this is the first iteration of j and k, then
+				// we're effectively as close to x*n=r as we can possibly get
+				//
+				// in this situation, exit the loop
+				// otherwise bit shift n to lower it
+				if j == 0 && k == 0 {
+					fmt.Printf("findIntermediateDivisor: r=%v; x=%v; n=%v\n", r, x, n)
+					return
+				}
+				n.nat[j] <<= 1
+			}
+		}
+	}
+
+	return
+}
+
 // ChildishDiv implements integer division of bi by x and returns
-// the remainder n.
+// the remainder r.
 //
 // It does so by iteratively substracting x from bi, which is
 // pretty much how a child would do it.
-func (bi *Int) ChildishDiv(x *Int) (n *Int) {
-	n = new(Int)
+func (bi *Int) ChildishDiv(x *Int) (r *Int) {
+	r = new(Int)
 	if x.Compare(NewInt(0)) == 0 {
 		panic("division by zero")
 	}
 	switch bi.Compare(x) {
 	case 0:
 		// if bi and x are equal, quotient is one, remainder is zero
-		n.Zero()
+		r.Zero()
 		bi.Set(NewInt(1))
 		return
 	case -1:
 		// if x is greater than bi,
 		// then quotient is zero and remainder is bi
-		n.Set(bi)
+		r.Set(bi)
 		bi.Zero()
 		return
 	}
@@ -296,7 +425,7 @@ func (bi *Int) ChildishDiv(x *Int) (n *Int) {
 		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
 		bi.Sub(x)
 	}
-	n.Set(bi)
+	r.Set(bi)
 	bi.Set(q)
 	return
 }
@@ -375,7 +504,7 @@ func (bi *Int) ModularExponentiation(x *Int, modulus *Int) {
 	for e := NewInt(0); e.Compare(x) < 0; e.Increment() {
 		//fmt.Printf("%x: %x * %x mod %x\n", e.Bytes(), c.Bytes(), base.Bytes(), modulus.Bytes())
 		c.Mul(bi)
-		c.Set(c.ChildishDiv(modulus))
+		c.Set(c.Div(modulus))
 	}
 	bi.Set(c)
 }
