@@ -398,27 +398,153 @@ func TestBigIntMulRandoms(t *testing.T) {
 	}
 }
 
-func TestChildishDiv(t *testing.T) {
+func TestDiv(t *testing.T) {
 	t.Parallel()
 	var testcases = []struct {
-		a, b, q, n int
+		a, b, expected_q, expected_r int
 	}{
-		{11, 5, 2, 1},
-		{987216431, 918734, 1074, 496115},
+		{10, 2, 5, 0},
+		{10, 3, 3, 1},
+		{7, 1, 7, 0},
+		{0, 5, 0, 0},
+		{5, 10, 0, 5}, // divisor > dividend
+		{12345, 67, 184, 17},
+		{65536, 256, 256, 0}, // limb boundary
+		{65535, 256, 255, 255},
+		{100000, 1, 100000, 0},
+		{70000, 260, 269, 60}, // multi-limb dividend and divisor
+		{1, 1, 1, 0},
+		{2, 1, 2, 0},
+		{65536, 65536, 1, 0}, // a == b
+		{65535, 65536, 0, 65535}, // b > a
 	}
-	for i, testcase := range testcases {
-		a := NewInt(testcase.a)
-		b := NewInt(testcase.b)
-		n := a.ChildishDiv(b)
-		if a.ToInt() != testcase.q {
-			t.Fatalf("testcase %d expected to find quotient %d but got %d",
-				i, testcase.q, a.ToInt())
+
+	for i, tc := range testcases {
+		num_a := NewInt(tc.a)
+		num_b := NewInt(tc.b)
+
+		// Log the inputs for easier debugging
+		// t.Logf("TestDiv Case %d: a=%d (%v), b=%d (%v)", i, tc.a, num_a.nat, tc.b, num_b.nat)
+
+		rem := num_a.Div(num_b)
+
+		if num_a.ToInt() != tc.expected_q {
+			t.Errorf("TestDiv Case %d: For %d / %d, expected quotient %d, got %d (num_a.nat: %v)",
+				i, tc.a, tc.b, tc.expected_q, num_a.ToInt(), num_a.nat)
 		}
-		if n.ToInt() != testcase.n {
-			t.Fatalf("testcase %d expected to find remainder %d but got %d",
-				i, testcase.n, n.ToInt())
+		if rem.ToInt() != tc.expected_r {
+			t.Errorf("TestDiv Case %d: For %d / %d, expected remainder %d, got %d (rem.nat: %v)",
+				i, tc.a, tc.b, tc.expected_r, rem.ToInt(), rem.nat)
 		}
 	}
+}
+
+func TestBigIntDiv(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 20; i++ { // Increased iterations for more thorough testing
+		std_a := new(big.Int)
+		std_b := new(big.Int)
+		q_expected := new(big.Int)
+		r_expected := new(big.Int)
+
+		// Generate random numbers. Ensure b is not zero.
+		// Use varying bit lengths to cover more scenarios.
+		bitLenA := 0
+		for bitLenA == 0 { // Ensure A is not 0 for more interesting tests, though Div handles it.
+			bitLenA, _ = rand.Int(rand.Reader, big.NewInt(512)) // Up to 512 bits for a
+			bitLenA.Add(bitLenA, big.NewInt(1)) // Ensure at least 1 bit
+		}
+
+		bitLenB := 0
+		for bitLenB == 0 { // Ensure B is not 0
+			bitLenB, _ = rand.Int(rand.Reader, big.NewInt(256)) // Up to 256 bits for b, generally smaller or similar to a
+			bitLenB.Add(bitLenB, big.NewInt(1)) // Ensure at least 1 bit
+		}
+
+		std_a, _ = rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), uint(bitLenA.Uint64())))
+		std_b, _ = rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), uint(bitLenB.Uint64())))
+
+		if std_b.Sign() == 0 { // Ensure b is not zero
+			std_b.SetInt64(1)
+		}
+		
+		// Handle case where a is 0, math/big DivMod panics if a is 0 and b is 0, though our Div handles a=0, b!=0
+		if std_a.Sign() == 0 {
+			q_expected.SetInt64(0)
+			r_expected.SetInt64(0)
+		} else {
+			q_expected.DivMod(std_a, std_b, r_expected)
+		}
+
+
+		num_a := new(Int)
+		num_a.SetBytes(std_a.Bytes())
+		num_b := new(Int)
+		num_b.SetBytes(std_b.Bytes())
+		
+		// Log initial state for debugging
+		// t.Logf("TestBigIntDiv Case %d: std_a=%s (%x), std_b=%s (%x)", i, std_a.String(), std_a.Bytes(), std_b.String(), std_b.Bytes())
+		// t.Logf("num_a before Div: %v", num_a.nat)
+		// t.Logf("num_b before Div: %v", num_b.nat)
+
+
+		num_r := num_a.Div(num_b) // num_a becomes quotient, num_r is remainder
+
+		// Normalize expected results from math/big if they are zero, as our bignum.Int represents 0 as {nat: [0]}
+		// and Bytes() of big.Int{0} is [], while Bytes() of bignum.Int{nat:[0]} is [0]
+		q_expected_bytes := q_expected.Bytes()
+		if len(q_expected_bytes) == 0 && q_expected.Sign() == 0 { // math/big represents 0 as empty []byte
+			q_expected_bytes = []byte{0} // Our bignum represents 0 as [0]
+		}
+		r_expected_bytes := r_expected.Bytes()
+		if len(r_expected_bytes) == 0 && r_expected.Sign() == 0 {
+			r_expected_bytes = []byte{0}
+		}
+		
+		num_a_bytes := num_a.Bytes()
+		if len(num_a_bytes) == 0 && num_a.Compare(NewInt(0)) == 0 { // If num_a is 0, Bytes() might be empty
+             num_a_bytes = []byte{0}
+        }
+		num_r_bytes := num_r.Bytes()
+		if len(num_r_bytes) == 0 && num_r.Compare(NewInt(0)) == 0 { // If num_r is 0, Bytes() might be empty
+             num_r_bytes = []byte{0}
+        }
+
+
+		if !bytes.Equal(num_a_bytes, q_expected_bytes) {
+			t.Errorf("TestBigIntDiv Case %d: Quotient mismatch for %s / %s\nExpected Q: %s (%x)\nGot Q: %s (%x -- num_a.nat: %v)\nExpected R: %s\nGot R: %s",
+				i, std_a.String(), std_b.String(),
+				q_expected.String(), q_expected_bytes,
+				new(big.Int).SetBytes(num_a_bytes).String(), num_a_bytes, num_a.nat,
+				r_expected.String(),
+				new(big.Int).SetBytes(num_r_bytes).String())
+		}
+		if !bytes.Equal(num_r_bytes, r_expected_bytes) {
+			t.Errorf("TestBigIntDiv Case %d: Remainder mismatch for %s / %s\nExpected R: %s (%x)\nGot R: %s (%x -- num_r.nat: %v)\nExpected Q: %s\nGot Q: %s",
+				i, std_a.String(), std_b.String(),
+				r_expected.String(), r_expected_bytes,
+				new(big.Int).SetBytes(num_r_bytes).String(), num_r_bytes, num_r.nat,
+				q_expected.String(),
+				new(big.Int).SetBytes(num_a_bytes).String())
+		}
+	}
+}
+
+func TestDivByZero(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("Div by zero did not panic")
+		} else {
+			// Optionally check the panic message if it's standardized
+			// if r.(string) != "division by zero" {
+			//    t.Errorf("Unexpected panic message: got %v, want %v", r, "division by zero")
+			// }
+		}
+	}()
+	a := NewInt(10)
+	b := NewInt(0) // This will have nat: [0]
+	_ = a.Div(b)
 }
 
 /*
