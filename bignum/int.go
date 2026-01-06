@@ -426,7 +426,7 @@ func (bi *Int) ModularExponentiation(x *Int, modulus *Int) {
 	for e := NewInt(0); e.Compare(x) < 0; e.Increment() {
 		//fmt.Printf("%x: %x * %x mod %x\n", e.Bytes(), c.Bytes(), base.Bytes(), modulus.Bytes())
 		c.Mul(bi)
-		c.Set(c.ChildishDiv(modulus))
+		c.Set(c.Div(modulus))
 	}
 	bi.Set(c)
 }
