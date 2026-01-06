@@ -232,6 +232,10 @@ func (bi *Int) Mul(x *Int) {
 
 // Div implements integer division of bi by x and returns
 // the remainder n.
+//
+// This implementation uses a binary long division algorithm
+// that processes the dividend bit-by-bit from the most significant
+// to the least significant bit, similar to long division by hand.
 func (bi *Int) Div(x *Int) (n *Int) {
 	n = new(Int)
 	if x.Compare(NewInt(0)) == 0 {
@@ -251,16 +255,63 @@ func (bi *Int) Div(x *Int) (n *Int) {
 		return
 	}
 
-	// substract x from bi until bi is lower than x,
-	// then the value of bi is the remainder stored in n,
-	// and the number of iteration is the quotient stored in bi
-	q := NewInt(0)
-	for q.Zero(); bi.Compare(x) > 0; q.Increment() {
-		//fmt.Printf("%x-%x\n", bi.Bytes(), x.Bytes())
-		bi.Sub(x)
+	// Save the dividend for processing
+	dividend := new(Int)
+	dividend.Set(bi)
+
+	// Initialize quotient and remainder to zero
+	quotient := NewInt(0)
+	remainder := NewInt(0)
+
+	// Get the bit length of the dividend to process it bit by bit
+	numBits := dividend.BitLen()
+
+	// Process each bit of the dividend from most significant to least
+	// We'll build the quotient from bit 0 up, so track the quotient bit position
+	quotientBitPos := 0
+	for i := numBits - 1; i >= 0; i-- {
+		// Shift remainder left by 1 bit (multiply by 2)
+		remainder.shiftLeft(1)
+
+		// Set the least significant bit of remainder to the i-th bit of dividend
+		if dividend.Bit(i) == 1 {
+			// Ensure remainder has at least one limb
+			if len(remainder.nat) == 0 {
+				remainder.nat = []uint16{1}
+			} else {
+				remainder.nat[0] |= 1
+			}
+		} else {
+			// Ensure remainder has at least one limb even for 0 bit
+			if len(remainder.nat) == 0 {
+				remainder.nat = []uint16{0}
+			}
+		}
+
+		// Shift quotient left by 1 bit to make room for the next bit
+		quotient.shiftLeft(1)
+
+		// If remainder >= divisor, subtract divisor and set quotient bit 0
+		cmp := remainder.Compare(x)
+		if cmp >= 0 {
+			remainder.Sub(x)
+			// Normalize remainder by removing trailing zero limbs
+			for len(remainder.nat) > 1 && remainder.nat[len(remainder.nat)-1] == 0 {
+				remainder.nat = remainder.nat[:len(remainder.nat)-1]
+			}
+			// Set bit 0 of quotient to 1 (we already shifted left)
+			if len(quotient.nat) == 0 {
+				quotient.nat = []uint16{1}
+			} else {
+				quotient.nat[0] |= 1
+			}
+		}
+		quotientBitPos++
 	}
-	n.Set(bi)
-	bi.Set(q)
+
+	// Store results: quotient in bi, remainder in n
+	bi.Set(quotient)
+	n.Set(remainder)
 	return
 }
 
@@ -402,3 +453,98 @@ func (bi *Int) IsFermatPrime() bool {
 // Rabin-Miller algorithm
 //func (bi *Int) IsRabinMillerPrime() bool {
 //}
+
+// BitLen returns the number of bits required to represent bi.
+// The bit length of 0 is 0.
+func (bi *Int) BitLen() int {
+	if len(bi.nat) == 0 {
+		return 0
+	}
+	// Find the most significant non-zero limb
+	msLimb := bi.nat[len(bi.nat)-1]
+	if msLimb == 0 {
+		return (len(bi.nat) - 1) * 16
+	}
+	// Count bits in the most significant limb
+	bits := 0
+	for msLimb > 0 {
+		bits++
+		msLimb >>= 1
+	}
+	return (len(bi.nat)-1)*16 + bits
+}
+
+// Bit returns the value of the i-th bit of bi (0 or 1).
+// The least significant bit has index 0.
+func (bi *Int) Bit(i int) uint {
+	if i < 0 {
+		return 0
+	}
+	limbIndex := i / 16
+	if limbIndex >= len(bi.nat) {
+		return 0
+	}
+	bitIndex := uint(i % 16)
+	return uint((bi.nat[limbIndex] >> bitIndex) & 1)
+}
+
+// shiftLeft shifts bi left by n bits (multiplies by 2^n).
+func (bi *Int) shiftLeft(n int) {
+	if n == 0 {
+		return
+	}
+	if len(bi.nat) == 0 {
+		// Ensure we have at least one limb for zero
+		bi.nat = append(bi.nat, 0)
+		return
+	}
+	if bi.nat[0] == 0 && len(bi.nat) == 1 {
+		return // zero stays zero
+	}
+
+	// Calculate how many full limbs we need to shift
+	limbShift := n / 16
+	bitShift := uint(n % 16)
+
+	if bitShift == 0 {
+		// Simple case: shift by full limbs only
+		newNat := make([]uint16, len(bi.nat)+limbShift)
+		copy(newNat[limbShift:], bi.nat)
+		bi.nat = newNat
+		return
+	}
+
+	// Need to shift bits within limbs
+	carry := uint16(0)
+	for i := 0; i < len(bi.nat); i++ {
+		newCarry := bi.nat[i] >> (16 - bitShift)
+		bi.nat[i] = (bi.nat[i] << bitShift) | carry
+		carry = newCarry
+	}
+	if carry != 0 {
+		bi.nat = append(bi.nat, carry)
+	}
+
+	// Now shift by full limbs if needed
+	if limbShift > 0 {
+		newNat := make([]uint16, len(bi.nat)+limbShift)
+		copy(newNat[limbShift:], bi.nat)
+		bi.nat = newNat
+	}
+}
+
+// setBit sets the i-th bit of bi to 1.
+func (bi *Int) setBit(i int) {
+	if i < 0 {
+		return
+	}
+	limbIndex := i / 16
+	bitIndex := uint(i % 16)
+
+	// Ensure bi has enough limbs
+	for len(bi.nat) <= limbIndex {
+		bi.nat = append(bi.nat, 0)
+	}
+
+	bi.nat[limbIndex] |= (1 << bitIndex)
+}
